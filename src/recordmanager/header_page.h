@@ -10,11 +10,14 @@ struct HeaderPage
     unsigned record_per_page;
     unsigned first_spare_page;
     unsigned header_data_used;
+    unsigned next_available;
+    unsigned not_null;
 
     char column_name[MAX_COLUMN_SIZE][MAX_NAME_LEN];
     int column_offset[MAX_COLUMN_SIZE];
     ColumnType column_type[MAX_COLUMN_SIZE];
-    int column_len[MAX_COLUMN_SIZE];
+    int column_array_len[MAX_COLUMN_SIZE];
+    int default_value_addr[MAX_COLUMN_SIZE];
     char header_data[MAX_COLUMN_SIZE];
 };
 
