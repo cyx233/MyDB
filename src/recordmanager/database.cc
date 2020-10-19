@@ -63,6 +63,15 @@ void Database::open(const std::string &name)
     assert(!db_is_ready_);
     db_name_ = name;
     std::ifstream fin((name + ".db").c_str());
+    fin >> tot_table_num_;
+    for (size_t i = 0; i < tot_table_num_; i++)
+    {
+        fin >> table_name_[i];
+        assert(table_[i] == nullptr);
+        table_[i] = new Table();
+        table_[i]->open((name + "." + table_name_[i] + ".table").c_str());
+    }
+    db_is_ready_ = true;
 }
 
 void Database::create(const std::string &name)

@@ -25,12 +25,4 @@
 using RID = unsigned int;
 #define UNUSED(x) (void)(x)
 
-enum ColumnType
-{
-    CT_INT,
-    CT_VARCHAR,
-    CT_FLOAT,
-    CT_DATE
-};
-
 #endif

@@ -1,6 +1,33 @@
 #include <cstring>
 #include <cassert>
+#include <sstream>
 #include "table.h"
+#include "filesystem/file_system_manager.h"
+
+void Table::expandBuf(bool isClear)
+{
+    if (buf_ == nullptr)
+    {
+        buf_ = new char[header_.record_byte_size];
+        buf_size_ = header_.record_byte_size;
+    }
+    else if (buf_size_ < header_.record_byte_size)
+    {
+        if (isClear)
+        {
+            delete buf_;
+            buf_ = new char[header_.record_byte_size];
+        }
+        else
+        {
+            char *temp = new char[header_.record_byte_size];
+            memcpy(temp, buf_, buf_size_);
+            buf_size_ = header_.record_byte_size;
+            delete buf_;
+            buf_ = temp;
+        }
+    }
+}
 
 void Table::set_footer_zero(const char *page)
 {
@@ -9,8 +36,7 @@ void Table::set_footer_zero(const char *page)
 
 void Table::initTempRecord()
 {
-    unsigned int &not_null = *(unsigned int *)buf_;
-    not_null = 0;
+    buf_not_null_ = 0;
     for (int i = 0; i < header_.record_column_size; ++i)
     {
         if (header_.default_value_addr[i] != -1)
@@ -32,22 +58,28 @@ void Table::initTempRecord()
                 assert(false);
                 break;
             }
-            not_null |= (1u << i);
+            buf_not_null_ |= (1u << i);
         }
     };
+}
+
+void Table::clearTempRecord()
+{
+    expandBuf(true);
+    initTempRecord();
 }
 
 void Table::allocPage()
 {
     int index;
-    BufType new_page = FileSystemManager::get_buf_manager()->allocPage(file_id_, header_.tot_page_num, index);
-    unsigned n = (PAGE_SIZE - PAGE_FOOTER_SIZE) / header_.record_byte_size;
+    char *new_page = (char *)FileSystemManager::get_buf_manager()->allocPage(file_id_, header_.tot_page_num, index);
+    int n = (PAGE_SIZE - PAGE_FOOTER_SIZE) / header_.record_byte_size;
     n = (n < MAX_REC_PER_PAGE) ? n : MAX_REC_PER_PAGE;
     for (int i = 0, p = 0; i < n; ++i, p += header_.record_byte_size)
     {
         unsigned &ptr = *(unsigned *)(new_page + p);
         ptr = header_.next_available;
-        header_.next_available = header_.tot_page_num * PAGE_SIZE + p;
+        header_.next_available = (unsigned)header_.tot_page_num * PAGE_SIZE + p;
     }
     set_footer_zero((char *)new_page);
     FileSystemManager::get_buf_manager()->markDirty(index);
@@ -217,14 +249,15 @@ void Table::create(const char *table_name)
     FileSystemManager::get_buf_manager()->allocPage(file_id_, 0, index);
     table_is_ready_ = true;
     header_.tot_page_num = 1;
-    header_.record_byte_size = 4; // reserve first 4 bytes for notnull info
+    header_.record_byte_size = 0; // reserve first 4 bytes for notnull info
     //header_.rowTot = 0;
     header_.record_column_size = 0;
     header_.header_data_used = 0;
     header_.next_available = (unsigned int)-1;
     header_.not_null = 0;
+    header_.tot_check_num = 0;
     addColumn("RID", CT_INT, 10, true, false, nullptr);
-    buf_ = nullptr;
+    buf_size_ = 0;
 }
 
 void Table::open(const char *table_name)
@@ -235,7 +268,7 @@ void Table::open(const char *table_name)
     FileSystemManager::get_file_manager()->openFile(table_name, file_id_);
     memcpy(&header_, FileSystemManager::get_buf_manager()->getPage(file_id_, 0, index), sizeof(HeaderPage));
     table_is_ready_ = true;
-    buf_ = nullptr;
+    buf_size_ = 0;
 }
 
 void Table::close()
@@ -274,13 +307,6 @@ int Table::get_col_id(const char *name)
     return -1;
 }
 
-void Table::clearTempRecord()
-{
-    if (buf_ == nullptr)
-        buf_ = new char[header_.record_byte_size];
-    initTempRecord();
-}
-
 std::string Table::set_temp_record(int col, const char *data)
 {
     if (data == nullptr)
@@ -288,12 +314,7 @@ std::string Table::set_temp_record(int col, const char *data)
         set_temp_record_null(col);
         return "";
     }
-    if (buf_ == nullptr)
-    {
-        buf_ = new char[header_.record_byte_size];
-        initTempRecord();
-    }
-    unsigned int &notNull = *(unsigned int *)buf_;
+    expandBuf(false);
     switch (header_.column_type[col])
     {
     case CT_INT:
@@ -315,20 +336,15 @@ std::string Table::set_temp_record(int col, const char *data)
     default:
         assert(0);
     }
-    notNull |= (1u << col);
+    buf_not_null_ |= (1u << col);
     return "";
 }
 
 void Table::set_temp_record_null(int col)
 {
-    if (buf_ == nullptr)
-    {
-        buf_ = new char[header_.record_byte_size];
-        initTempRecord();
-    }
-    unsigned int &notNull = *(unsigned int *)buf_;
-    if (notNull & (1u << col))
-        notNull ^= (1u << col);
+    expandBuf(false);
+    if (buf_not_null_ & (1u << col))
+        buf_not_null_ ^= (1u << col);
 }
 
 // return value change. Urgly interface.
@@ -341,8 +357,14 @@ std::string Table::insertTempRecord()
     {
         allocPage();
     }
-    int rid = header_.next_available;
+    // RID rid = header_.next_available;
     set_temp_record(0, (char *)&header_.next_available);
+    std::string error = checkRecord();
+    if (!error.empty())
+    {
+        printf("Error occurred when inserting record, aborting...\n");
+        return error;
+    }
     int page_id = header_.next_available / PAGE_SIZE;
     int offset = header_.next_available % PAGE_SIZE;
     int index;
@@ -371,10 +393,7 @@ void Table::dropRecord(RID rid)
 std::string Table::loadRecordToTemp(RID rid, char *page, int offset)
 {
     UNUSED(rid);
-    if (buf_ == nullptr)
-    {
-        buf_ = new char[header_.record_byte_size];
-    }
+    expandBuf(false);
     char *record = page + offset;
     if (!get_footer(page, offset / header_.record_byte_size))
     {
@@ -475,9 +494,8 @@ char *Table::select(RID rid, int col)
     {
         ptr = buf_;
     }
-    unsigned int &notNull = *(unsigned int *)ptr;
-    char *buf_;
-    if ((~notNull) & (1 << col))
+    char *temp;
+    if ((~buf_not_null_) & (1 << col))
     {
         return nullptr;
     }
@@ -486,15 +504,16 @@ char *Table::select(RID rid, int col)
     case CT_INT:
     case CT_DATE:
     case CT_FLOAT:
-        buf_ = new char[4];
-        memcpy(buf_, ptr + get_col_offset(col), 4);
-        return buf_;
+        temp = new char[4];
+        memcpy(temp, ptr + get_col_offset(col), 4);
+        return temp;
     case CT_VARCHAR:
-        buf_ = new char[header_.column_array_len[col] + 1];
-        strcpy(buf_, ptr + get_col_offset(col));
-        return buf_;
+        temp = new char[header_.column_array_len[col] + 1];
+        strcpy(temp, ptr + get_col_offset(col));
+        return temp;
     default:
         assert(false);
+        exit(1);
     }
 }
 
@@ -502,4 +521,172 @@ char *Table::get_col_name(int col)
 {
     assert(0 <= col && col < header_.record_column_size);
     return header_.column_name[col];
+}
+
+std::string Table::checkRecord()
+{
+    if ((buf_not_null_ & header_.not_null) != header_.not_null)
+    {
+        return "Insert Error: not null column is null.";
+    }
+
+    std::string valueCheck = checkValueConstraint();
+    if (!valueCheck.empty())
+    {
+        return valueCheck;
+    }
+
+    return std::string();
+}
+
+std::string Table::checkValueConstraint()
+{
+    bool flag = true, checkResult = false;
+    for (int i = 0; i < header_.tot_check_num; i++)
+    {
+        Check chk = header_.check_list[i];
+        if (chk.offset == -1) //data is null
+        {
+            checkResult |= (chk.op == OP_EQ) && (((~buf_not_null_) & (1 << chk.col)) == 0);
+        }
+        else
+        {
+            switch (header_.column_type[chk.col])
+            {
+            case CT_INT:
+            case CT_DATE:
+                checkResult |= compareInt(*(int *)(buf_ + header_.column_offset[chk.col]), chk.op,
+                                          *(int *)(header_.header_data + chk.offset));
+                break;
+            case CT_FLOAT:
+                checkResult |= compareFloat(*(float *)(buf_ + header_.column_offset[chk.col]), chk.op,
+                                            *(float *)(header_.header_data + chk.offset));
+                break;
+            case CT_VARCHAR:
+                checkResult |= compareVarchar(buf_ + header_.column_offset[chk.col], chk.op,
+                                              header_.header_data + chk.offset);
+                break;
+            default:
+                assert(false);
+            }
+        }
+        if (i == header_.tot_check_num - 1 || chk.rel == RE_AND ||
+            !(header_.check_list[i + 1].rel == RE_OR && chk.col == header_.check_list[i + 1].col))
+        {
+            flag &= checkResult;
+            checkResult = false;
+        }
+        if (!flag)
+            return genCheckError(i);
+    }
+    return std::string();
+}
+
+std::string Table::genCheckError(int checkId)
+{
+    int ed = checkId + 1, st = checkId;
+    while (header_.check_list[st - 1].col == header_.check_list[checkId].col &&
+           header_.check_list[st - 1].rel == RE_OR &&
+           header_.check_list[checkId].rel == RE_OR)
+    {
+        checkId++;
+    }
+    std::ostringstream stm;
+    stm << "Insert Error: Col " << header_.column_name[header_.check_list[checkId].col];
+    stm << " CHECK ";
+
+    for (int i = st; i < ed; i++)
+    {
+        if (i != st)
+            stm << " OR ";
+        Check chk = header_.check_list[i];
+        switch (header_.column_type[chk.col])
+        {
+        case CT_INT:
+        case CT_DATE:
+            if (buf_not_null_ & (1 << chk.col))
+            {
+                stm << *(int *)(buf_ + header_.column_offset[chk.col]);
+            }
+            else
+            {
+                stm << "null";
+            } // TODO parse date to string here
+            stm << opTypeToString(chk.op) << *(int *)(header_.header_data + chk.offset);
+            break;
+        case CT_FLOAT:
+            if (buf_not_null_ & (1 << chk.col))
+            {
+                stm << *(float *)(buf_ + header_.column_offset[chk.col]);
+            }
+            else
+            {
+                stm << "null";
+            }
+            stm << opTypeToString(chk.op) << *(float *)(header_.header_data + chk.offset);
+            break;
+        case CT_VARCHAR:
+            if (buf_not_null_ & (1 << chk.col))
+            {
+                stm << *(int *)(buf_ + header_.column_offset[chk.col]);
+            }
+            else
+            {
+                stm << "null";
+            }
+            stm << "'" << buf_ + header_.header_data[chk.col] << "''" << opTypeToString(chk.op) << "'"
+                << header_.header_data + chk.offset << "'";
+            break;
+        default:
+            assert(false);
+        }
+    }
+    return stm.str();
+}
+
+// RelType is used to create Inset operation.
+// Dirty interface.
+// With `relation` RE_OR and same `col`, the result will OR together
+// others will AND together
+// data == 0 if data is null
+// Example:
+//   List: [1, >, 10, AND], [2, ==, 'a', OR], [2, ==, 'b', OR], [3, ==, 'c', OR]
+//   Result: col[1]>10 AND (col[2]=='a' OR col[2]=='b') AND col[3]=='c'
+// Example:
+//   List: [1, >, 10, AND], [2, ==, 'a', OR], [3, ==, 'c', OR], [2, ==, 'b', OR]
+//   Result: col[1]>10 AND col[2]=='a' AND col[3]=='c' AND col[2]=='b'
+
+void Table::addCheck(int col, OpType op, char *data, RelType relation)
+{
+    UNUSED(op);
+    assert(header_.tot_page_num == 1);
+    assert(header_.tot_check_num < MAX_CHECK);
+    int id = header_.tot_check_num;
+    header_.check_list[id].col = col;
+    header_.check_list[id].offset = header_.header_data_used;
+    header_.check_list[id].rel = relation;
+    if (data == nullptr)
+    {
+        header_.check_list[id].offset = -1;
+        header_.tot_check_num++;
+        return;
+    }
+    switch (header_.column_type[col])
+    {
+    case CT_INT:
+    case CT_FLOAT:
+    case CT_DATE:
+        memcpy(header_.header_data + header_.header_data_used, data, 4);
+        header_.header_data_used += 4;
+        break;
+    case CT_VARCHAR:
+        strcpy(header_.header_data + header_.header_data_used, data);
+        header_.header_data_used += strlen(data) + 1;
+        header_.header_data_used += (4 - header_.header_data_used % 4) % 4;
+        break;
+    default:
+        assert(0);
+    }
+    assert(header_.header_data_used <= MAX_DATA_SIZE);
+    header_.tot_check_num++;
 }

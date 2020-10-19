@@ -169,7 +169,6 @@ public:
 
 	void closeFile(int file_id, bool if_write = true)
 	{
-		int index;
 		for (int i = 0; i < CAP; ++i)
 		{
 			int file, page;
@@ -178,11 +177,11 @@ public:
 			{
 				if (if_write)
 				{
-					writeBack(index);
+					writeBack(i);
 				}
 				else
 				{
-					release(index);
+					release(i);
 				}
 			}
 		}
