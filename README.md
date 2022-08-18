@@ -14,45 +14,45 @@
 
 ## Modules
 0.  minios, system, backend, excetable, parser
-- The runtime environment.
-- Provided by the teacher.
+    - The runtime environment.
+    - Provided by the teacher.
 
 1. exception
 
 2. utils
-- Bitmap and PrintTable
+    - Bitmap and PrintTable
 
 3. page
-- API for MiniOS's memory page.
-- config in macros.h
-- Important API
-  - Page::SetData, Page::GetData, Page::SetHeader, Page::GetHeader
-  - LinkedPage::PushBack, LinkedPage::PopBack
-  - RecordPage
+    - API for MiniOS's memory page.
+    - config in macros.h
+    - Important API
+        - Page::SetData, Page::GetData, Page::SetHeader, Page::GetHeader
+        - LinkedPage::PushBack, LinkedPage::PopBack
+        - RecordPage
 
 4. field
 
-- type in [ Int, Float, String ]
+    - type [ Int, Float, String ]
 
 5. record
-- FixedRecord and VariableRecord
+    - FixedRecord and VariableRecord
 
 6. condition
-- conditional search
+    - conditional search
 
 7. table
-- Important API
-  - Table::GetRecord
-  - Table::InsertRecord
-  - Table::DeleteRecord
-  - Table::UpdateRecord
-  - Table::SearchRecord
-  - Table::NextNotFull
+    - Important API
+        - Table::GetRecord
+        - Table::InsertRecord
+        - Table::DeleteRecord
+        - Table::UpdateRecord
+        - Table::SearchRecord
+        - Table::NextNotFull
 
 8. manager
 
-- TableManager, IndexManager and TransactionManager
+    - TableManager, IndexManager and TransactionManager
 
 9.  result
 
-- connect parser module and database kernel
+    - connect parser module and database kernel
